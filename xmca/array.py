@@ -13,6 +13,14 @@ from typing import Dict
 import matplotlib.pyplot as plt
 import numpy as np
 import yaml
+
+try:
+    import dask.array as da
+    dask_support = True
+except ImportError:
+    dask_support = False
+
+from numpy.polynomial.polynomial import polyfit
 from scipy.signal import hilbert
 from statsmodels.tsa.forecasting.theta import ThetaModel
 from tqdm import tqdm
@@ -20,6 +28,11 @@ from tqdm import tqdm
 from xmca import __version__
 from xmca.tools.array import (get_nan_cols, has_nan_time_steps, remove_mean,
                               remove_nan_cols, pearsonr, block_bootstrap)
+from xmca.tools.array import remove_nan_cols, hilbert
+
+if dask_support:
+    from xmca.tools.array import dask_hilbert
+
 from xmca.tools.rotation import promax
 from xmca.tools.text import boldify_str, secure_str, wrap_str
 
@@ -82,9 +95,9 @@ class MCA:
                 raise ValueError('''Time dimensions of given fields are different.
                 Time series should have same time lengths.''')
 
-        if not all(isinstance(f, np.ndarray) for f in fields):
-            raise TypeError('''One or more fields are not `numpy.ndarray`.
-            Please provide `numpy.ndarray` only.''')
+        if not all(isinstance(f, (np.ndarray, da.Array)) for f in fields):
+            raise TypeError('''Input fields must be either `numpy.ndarray` or
+                `dask.array.Array`.''')
 
         if any(has_nan_time_steps(f) for f in fields):
             raise ValueError('''One or more fields contain NaN time steps.
@@ -410,6 +423,42 @@ class MCA:
 
         return exp_extension + lin_extension
 
+    def _get_reg_coefs(self, x, y):
+        assert(x.shape[0] == y.shape[0])
+        N = x.shape[0]
+
+        xmean = np.mean(x, axis=0)
+        ymean = np.mean(y, axis=0)
+        xstd  = np.mean(x, axis=0)
+
+        # Compute covariance along time axis
+        cov   = np.sum((x - xmean) * (y - ymean), axis=0) / N
+
+        # Compute regression slope and intercept:
+        slope     = cov / (xstd**2)
+        intercept = ymean - xmean * slope
+        return intercept, slope
+
+    def _vec_exp_forecast(self, field):
+        N = field.shape[0]
+        x = np.arange(N)
+        x = np.repeat(x[:, np.newaxis], field.shape[1], axis=1)
+        intercept, slope = self._get_reg_coefs(x, field)
+
+        linear_end = slope * x[-1, :] + intercept
+        series_end = field[-1, :]
+        offset      = series_end - linear_end
+
+        b = 1
+        tau = b * 50 / N
+        # start x at 1, because exp(0) would produce same value as the last
+        # point of the original time series
+        x_shift = x + 1
+        exp_extension = offset * np.exp(-tau * x_shift)
+        lin_extension = (slope * x) + linear_end
+
+        return exp_extension + lin_extension
+
     def _extend(self, field):
         extend = self._analysis['extend']
         # Theta extension
@@ -423,6 +472,11 @@ class MCA:
             error_message = '''{:} is not a valid extension. Choose either
             `exp` or `theta`.'''.format(extend)
             raise ValueError(error_message)
+
+        if dask_support and isinstance(field, da.Array):
+            extended = da.asarray(extended).T
+        else:
+            extended = np.asarray(extended).T
 
         return extended
 
@@ -458,11 +512,19 @@ class MCA:
                 post    = self._extend(fields[k])
                 pre     = self._extend(fields[k][::-1])[::-1]
 
+            # perform actual Hilbert transform of (extended) time series
+            if dask_support and isinstance(fields[k], da.Array):
+                fields[k] = da.concatenate([pre, fields[k], post])
+                # hilbert dask version accepts only one chunk on first
+                # dimension
+                fields[k] = da.rechunk(fields[k], chunks={0 : -1})
+            else:
                 fields[k] = np.concatenate([pre, fields[k], post])
 
-            # perform actual Hilbert transform of (extended) time series
+        if dask_support and isinstance(fields[k], da.Array):
+            fields[k] = dask_hilbert(fields[k], axis=0)
+        else:
             fields[k] = hilbert(fields[k], axis=0)
-
             if self._analysis['extend']:
                 # cut out the first and last third of Hilbert transform
                 # which belong to the forecast/backcast
@@ -506,7 +568,7 @@ class MCA:
 
         return np.max(n_modes)
 
-    def solve(self, complexify=False, extend=False, period=1):
+    def solve(self, complexify=False, extend=False, period=1, svd_kwargs={}):
         '''Call the solver to perform EOF analysis/MCA.
 
         Under the hood the method performs singular value decomposition on
@@ -552,38 +614,41 @@ class MCA:
         k, l, mt = self._svd(X)
         R = {key: k[key] * l[key] for key in self._keys}
         # create covariance matrix
-        try:
-            kernel = R['left'].conj().T @ R['right']
-        except KeyError:
-            try:
-                kernel = R['left'].conj().T @ R['left']
-            except KeyError as err:
-                msg = (
-                    'Error in creating kernel. Please report this issue on '
-                    'GitHub'
-                )
-                raise KeyError(msg) from err
+
+        if dask_support and isinstance(R['left'], da.Array):
+            dot = da.dot
+        else:
+            dot = np.dot
+        # create covariance matrix
+        if self._analysis['is_bivariate']:
+            kernel = dot(R['left'].conj().T, R['right'])
+        else:
+            kernel = dot(R['left'].conj().T, R['left'])
         kernel = kernel / dof
+
+        self._V = {}  # singular vectors (EOFs)
+        self._L = {}  # "loaded" singular vectors
+        self._U = {}  # projections // (PCs)
 
         # perform singular value decomposition
         try:
-            VLeft, singular_values, VTRight = np.linalg.svd(
-                kernel, full_matrices=False
-            )
-            VRight = VTRight.conj().T
-            del(VTRight)
+            if dask_support and isinstance(kernel, da.Array):
+                print('yo geil, dask funzt!')
+                # use parallel dask algorithm
+                dsvd = da.linalg.svd_compressed(kernel, **svd_kwargs)
+                VLeft, singular_values, VTRight = (x.compute() for x in dsvd)
+                print(type(VLeft))
+            else:
+                VLeft, singular_values, VTRight = np.linalg.svd(
+                    kernel, full_matrices=False
+                )
         except np.linalg.LinAlgError:
-            raise np.linalg.LinAlgError(
-                '''SVD failed. NaN entries may be the problem.'''
-            )
+            raise ValueError('''SVD failed. NaN entries may be the problem.''')
 
-        V = {}
-        V['left'] = VLeft
-        V['right'] = VRight
-        # singular vectors (EOFs) = V
-        self._V = {key: mt[key].conj().T @ V[key] for key in self._keys}
-
-        # free up space
+        self._V['left'] = VLeft
+        if self._analysis['is_bivariate']:
+            self._V['right'] = VTRight.conj().T
+        # free up some space
         del(VLeft)
         del(VRight)
 
@@ -835,6 +900,22 @@ class MCA:
         self._norm = norm
         self._variance = variance
         self._var_idx = var_idx
+        # rotate PC scores
+        # If rotation is orthogonal: R.T = R
+        # If rotation is oblique (p>1): R^(-1).T = R
+        for key, pcs in self._U.items():
+            if(power == 1):
+                rot_U[key] = pcs[:, :n_rot] @ R
+            else:
+                rot_U[key] = pcs[:, :n_rot] @ np.linalg.pinv(R).conj().T
+
+        # store rotated pcs, eofs and "singular_values"
+        # and sort according to described variance
+        self._singular_values   = variance[var_idx]
+        for key in rot_L.keys():
+            self._V[key] = rot_V[key][:, var_idx]   # Standardized EOFs
+            self._L[key] = rot_L[key][:, var_idx]   # Loaded EOFs
+            self._U[key] = rot_U[key][:, var_idx]   # Standardized PC scores
 
         # store rotation and correlation matrix of PCs + meta information
         self._rotation_matrix           = R
@@ -1087,7 +1168,7 @@ class MCA:
 
         amplitudes = {}
         for key, eof in eofs.items():
-            amplitudes[key] = np.sqrt(eof * eof.conjugate()).real
+            amplitudes[key] = np.sqrt(eof * eof.conj()).real
 
             if scaling == 'max':
                 amplitudes[key] /= np.nanmax(amplitudes[key], axis=(0, 1))
@@ -1148,7 +1229,7 @@ class MCA:
 
         amplitudes = {}
         for key, pc in pcs.items():
-            amplitudes[key] = np.sqrt(pc * pc.conjugate()).real
+            amplitudes[key] = np.sqrt(pc * pc.conj()).real
 
             if scaling == 'max':
                 amplitudes[key] /= np.nanmax(amplitudes[key], axis=0)

@@ -82,7 +82,9 @@ class xMCA(MCA):
             self._field_coords[key] = field.coords
 
         # constructor of base class for numpy.ndarray
-        fields = {key : field.values for key, field in fields.items()}
+        if len(fields) == 0:
+            fields = {'left': xr.DataArray([])}
+        fields = {key : field.data for key, field in fields.items()}
         super().__init__(*fields.values())
 
     def _scale_X(self, data_dict):
