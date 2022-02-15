@@ -8,6 +8,8 @@ from parameterized import parameterized
 
 try:
     import dask.array
+    from dask.distributed import Client
+    Client()
     dask_support = True
 except ImportError:
     dask_support = False
@@ -38,7 +40,7 @@ class TestXarray(unittest.TestCase):
         )
 
     def test_input(self):
-        xMCA()
+        #xMCA()
         xMCA(self.A)
         xMCA(self.A, self.B)
         with self.assertRaises(ValueError):
@@ -48,6 +50,7 @@ class TestXarray(unittest.TestCase):
             xMCA(np.array([1, 2, 3]))
 
         if dask_support:
+
             temp = xr.tutorial.open_dataset(
                 'air_temperature',
                 chunks={'lat': 25, 'lon': 25, 'time': -1}

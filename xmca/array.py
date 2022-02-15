@@ -245,8 +245,7 @@ class MCA:
         data_2d = {}
         for k, field in data.items():
             n_obs = field.shape[0]
-            n_vars = np.product(field.shape[1:])
-
+            n_vars = int(np.product(field.shape[1:]))
             field = field.reshape(n_obs, n_vars)
             data_2d[k] = field
 
@@ -478,7 +477,7 @@ class MCA:
         else:
             extended = np.asarray(extended).T
 
-        return extended
+        return extended.T
 
     def _complexify(self, fields: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
         '''Complexify data via Hilbert transform.
@@ -511,20 +510,23 @@ class MCA:
             if self._analysis['extend']:
                 post    = self._extend(fields[k])
                 pre     = self._extend(fields[k][::-1])[::-1]
+                print(pre.shape)
+                print(post.shape)
+                print(fields[k].shape)
+                # perform actual Hilbert transform of (extended) time series
+                if dask_support and isinstance(fields[k], da.Array):
+                    fields[k] = da.concatenate([pre, fields[k], post])
+                    # hilbert dask version accepts only one chunk on first
+                    # dimension
+                    fields[k] = da.rechunk(fields[k], chunks={0 : -1})
+                else:
+                    fields[k] = np.concatenate([pre, fields[k], post])
 
-            # perform actual Hilbert transform of (extended) time series
             if dask_support and isinstance(fields[k], da.Array):
-                fields[k] = da.concatenate([pre, fields[k], post])
-                # hilbert dask version accepts only one chunk on first
-                # dimension
-                fields[k] = da.rechunk(fields[k], chunks={0 : -1})
+                fields[k] = dask_hilbert(fields[k], axis=0)
             else:
-                fields[k] = np.concatenate([pre, fields[k], post])
+                fields[k] = hilbert(fields[k], axis=0)
 
-        if dask_support and isinstance(fields[k], da.Array):
-            fields[k] = dask_hilbert(fields[k], axis=0)
-        else:
-            fields[k] = hilbert(fields[k], axis=0)
             if self._analysis['extend']:
                 # cut out the first and last third of Hilbert transform
                 # which belong to the forecast/backcast
@@ -650,7 +652,7 @@ class MCA:
             self._V['right'] = VTRight.conj().T
         # free up some space
         del(VLeft)
-        del(VRight)
+        del(VTRight)
 
         self._singular_values = singular_values
         self._variance = singular_values
@@ -722,13 +724,14 @@ class MCA:
         keep_modes = self._get_slice(n)
 
         fields  = self._get_X()
-        V = self._get_V(max_mode, rotated=False)
+        V = self._get_V(max_mode, rotated)
         sqrt_svals = np.sqrt(self._get_svals(max_mode))
         R       = self.rotation_matrix(inverse_transpose=True)
         var_idx = self._var_idx
 
         U = {}
         for k in self._keys:
+
             U[k] = fields[k] @ V[k] / sqrt_svals
             if rotated:
                 U[k] = U[k] @ R
@@ -885,12 +888,12 @@ class MCA:
         # rotate loadings (Cheng and Dunkerton 1995)
         L = np.concatenate(list(V.values()))
         L = L * sqrt_svals
-        L_rot, R, Phi = promax(L, power, maxIter=1000, tol=tol)
+        rot_L, R, Phi = promax(L, power, maxIter=1000, tol=tol)
 
         # calculate variance/reconstruct rotated "singular_values"
         norm    = {}
-        norm['left']    = np.linalg.norm(L_rot[:n_vars_left, :], axis=0)
-        norm['right']   = np.linalg.norm(L_rot[n_vars_left:, :], axis=0)
+        norm['left']    = np.linalg.norm(rot_L[:n_vars_left, :], axis=0)
+        norm['right']   = np.linalg.norm(rot_L[n_vars_left:, :], axis=0)
         if not self._analysis['is_bivariate']:
             norm['right'] = norm['left']
 
@@ -903,6 +906,7 @@ class MCA:
         # rotate PC scores
         # If rotation is orthogonal: R.T = R
         # If rotation is oblique (p>1): R^(-1).T = R
+        rot_U = {}
         for key, pcs in self._U.items():
             if(power == 1):
                 rot_U[key] = pcs[:, :n_rot] @ R
@@ -912,7 +916,7 @@ class MCA:
         # store rotated pcs, eofs and "singular_values"
         # and sort according to described variance
         self._singular_values   = variance[var_idx]
-        for key in rot_L.keys():
+        for key in self._U.keys():
             self._V[key] = rot_V[key][:, var_idx]   # Standardized EOFs
             self._L[key] = rot_L[key][:, var_idx]   # Loaded EOFs
             self._U[key] = rot_U[key][:, var_idx]   # Standardized PC scores

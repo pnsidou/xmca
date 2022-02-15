@@ -1269,13 +1269,16 @@ class xMCA(MCA):
         self._create_analysis_path(analysis_path)
         self._create_info_file(analysis_path)
 
+        rotated = self._analysis['is_rotated']
         fields      = self.fields(original_scale=True)
-        eofs        = self.eofs(rotated=False)
+        eofs        = self.eofs(rotated=rotated)
+        pcs        = self.pcs(rotated=rotated)
         singular_values = self.singular_values()
 
         self._save_data(singular_values, analysis_path, engine)
         for key in self._keys:
             self._save_data(eofs[key], analysis_path, engine)
+            self._save_data(pcs[key], analysis_path, engine)
             # save storage and save only real part of fields
             # complex part can be cheaply reconstructed when loaded
             self._save_data(fields[key].real, analysis_path, engine)

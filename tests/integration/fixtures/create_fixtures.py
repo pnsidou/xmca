@@ -1,6 +1,13 @@
 import xarray as xr
 import xmca.xarray as xmca
 
+try:
+    import dask.array
+    from dask.distributed import LocalCluster, Client
+    client = Client('127.0.0.1:41205')
+except ImportError as e:
+    print('dask is not supported')
+
 prcp = xr.open_dataarray('prcp.nc')
 sst = xr.open_dataarray('sst.nc')
 

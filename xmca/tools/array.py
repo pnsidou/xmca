@@ -142,6 +142,9 @@ def remove_nan_cols(arr: np.ndarray) -> np.ndarray:
 
     '''
     " Remove all columns where the first row contains"
+
+    if len(arr) == 0:
+        return arr
     if isinstance(arr, np.ndarray):
         index = np.where(~(np.isnan(arr[0])))[0]
     elif isinstance(arr, da.Array):
@@ -152,7 +155,7 @@ def remove_nan_cols(arr: np.ndarray) -> np.ndarray:
     else:
         raise TypeError('Must be either `np.ndarray` or `dask.array.Array`')
     new_arr  = arr[:, index]
-    return new_arr, index
+    return new_arr
 
 
 def has_nan_time_steps(array):

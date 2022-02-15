@@ -2,12 +2,16 @@ import unittest
 import warnings
 from os import getcwd
 from os.path import join
+from pathlib import Path
 from shutil import rmtree
 
 import numpy as np
 import xarray as xr
+
 try:
     import dask.array
+    from dask.distributed import Client
+    client = Client()
     dask_support = True
 except ImportError:
     dask_support = False
@@ -16,19 +20,20 @@ from numpy.testing import assert_allclose
 
 from xmca.xarray import xMCA
 
-
 class TestIntegration(unittest.TestCase):
 
     @classmethod
     def setUpClass(self):
-        # Load test data
-        self.path = 'tests/integration/fixtures'
+        # Load test data ,
+        self.path = Path(__file__).parent
+
+        print(self.path)
         # ignore some deprecation warnings of xarray
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", category=DeprecationWarning)
-            self.A = xr.open_dataarray(join(self.path, 'sst.nc'))
-            self.B = xr.open_dataarray(join(self.path, 'prcp.nc'))
-
+            path = self.path / 'fixtures'
+            self.A = xr.open_dataarray(path / 'sst.nc')
+            self.B = xr.open_dataarray(path / 'prcp.nc')
         # how many modes to compare
         self.modes = 10
         # acceptable tolerance for comparison
@@ -36,28 +41,18 @@ class TestIntegration(unittest.TestCase):
 
     def test_standard_mca(self):
         files = {
-            'svalues' : 'mca_c0_r00_p00_singular_values.nc',
-            'eofs_A' : 'mca_c0_r00_p00_sst_eofs.nc',
-            'eofs_B' : 'mca_c0_r00_p00_prcp_eofs.nc',
-            'pcs_A' : 'mca_c0_r00_p00_sst_pcs.nc',
-            'pcs_B' : 'mca_c0_r00_p00_prcp_pcs.nc',
+            'eofs_A' : 'sst_eofs.nc',
+            'svalues' : 'singular_values.nc',
+            'eofs_B' : 'prcp_eofs.nc',
+            'pcs_A' : 'sst_pcs.nc',
+            'pcs_B' : 'prcp_pcs.nc',
         }
-        svalues = xr.open_dataarray(
-            join(self.path, files['svalues'])
-        )[:self.modes]
-        eofs_A = xr.open_dataarray(
-            join(self.path, files['eofs_A'])
-        )[..., :self.modes]
-        eofs_B = xr.open_dataarray(
-            join(self.path, files['eofs_B'])
-        )[..., :self.modes]
-        pcs_A = xr.open_dataarray(
-            join(self.path, files['pcs_A'])
-        )[:, :self.modes]
-        pcs_B = xr.open_dataarray(
-            join(self.path, files['pcs_B'])
-        )[:, :self.modes]
-
+        std_path = self.path / 'fixtures' / 'std'
+        svalues = xr.open_dataarray(std_path / files['svalues'])[:self.modes]
+        eofs_A = xr.open_dataarray(std_path / files['eofs_A'])[..., :self.modes]
+        eofs_B = xr.open_dataarray(std_path / files['eofs_B'])[..., :self.modes]
+        pcs_A = xr.open_dataarray(std_path / files['pcs_A'])[:, :self.modes]
+        pcs_B = xr.open_dataarray(std_path / files['pcs_B'])[:, :self.modes]
         mca = xMCA(self.A, self.B)
         mca.set_field_names('sst', 'prcp')
         mca.solve()
@@ -85,7 +80,7 @@ class TestIntegration(unittest.TestCase):
         mca.plot(1)
         mca.save_analysis('./tests/integration')
 
-        path = './tests/integration/xmca/sst_prcp/mca_c0_r00_p00.info'
+        path = self.path / 'info.xmca'
         mca2 = xMCA()
         mca2.load_analysis(path)
         vals = mca2.singular_values(self.modes)
@@ -117,32 +112,22 @@ class TestIntegration(unittest.TestCase):
         #   err_msg='right reconstructed field does not match'
         # )
 
-        rmtree(join(getcwd(), 'tests/integration/xmca/'))
+        #rmtree(join(getcwd(), 'tests/integration/xmca/'))
 
     def test_rotated_mca(self):
         files = {
-            'svalues' : 'mca_c0_r10_p01_singular_values.nc',
-            'eofs_A' : 'mca_c0_r10_p01_sst_eofs.nc',
-            'eofs_B' : 'mca_c0_r10_p01_prcp_eofs.nc',
-            'pcs_A' : 'mca_c0_r10_p01_sst_pcs.nc',
-            'pcs_B' : 'mca_c0_r10_p01_prcp_pcs.nc',
+            'svalues' : 'singular_values.nc',
+            'eofs_A' : 'sst_eofs.nc',
+            'eofs_B' : 'prcp_eofs.nc',
+            'pcs_A' : 'sst_pcs.nc',
+            'pcs_B' : 'prcp_pcs.nc',
         }
-
-        svalues = xr.open_dataarray(
-            join(self.path, files['svalues'])
-        )[:self.modes]
-        eofs_A = xr.open_dataarray(
-            join(self.path, files['eofs_A'])
-        )[..., :self.modes]
-        eofs_B = xr.open_dataarray(
-            join(self.path, files['eofs_B'])
-        )[..., :self.modes]
-        pcs_A = xr.open_dataarray(
-            join(self.path, files['pcs_A'])
-        )[:, :self.modes]
-        pcs_B = xr.open_dataarray(
-            join(self.path, files['pcs_B'])
-        )[:, :self.modes]
+        rot_path = self.path / 'fixtures' / 'rot'
+        svalues = xr.open_dataarray(rot_path / files['svalues'])[:self.modes]
+        eofs_A = xr.open_dataarray(rot_path / files['eofs_A'])[..., :self.modes]
+        eofs_B = xr.open_dataarray(rot_path / files['eofs_B'])[..., :self.modes]
+        pcs_A = xr.open_dataarray(rot_path / files['pcs_A'])[:, :self.modes]
+        pcs_B = xr.open_dataarray(rot_path / files['pcs_B'])[:, :self.modes]
 
         mca = xMCA(self.A, self.B)
         mca.set_field_names('sst', 'prcp')
@@ -180,9 +165,8 @@ class TestIntegration(unittest.TestCase):
         mca.plot(1)
         mca.save_analysis('./tests/integration')
 
-        path = './tests/integration/xmca/sst_prcp/mca_c0_r10_p01.info'
         mca2 = xMCA()
-        mca2.load_analysis(path)
+        mca2.load_analysis(rot_path / 'info.xmca')
         vals = mca2.singular_values(self.modes)
         eofs = mca2.eofs(self.modes)
         pcs = mca2.pcs(self.modes)
@@ -216,31 +200,31 @@ class TestIntegration(unittest.TestCase):
 
     def test_complex_mca(self):
         files = {
-            'svalues' : 'mca_c1_r10_p01_singular_values.nc',
-            'eofs_A' : 'mca_c1_r10_p01_sst_eofs.nc',
-            'eofs_B' : 'mca_c1_r10_p01_prcp_eofs.nc',
-            'pcs_A' : 'mca_c1_r10_p01_sst_pcs.nc',
-            'pcs_B' : 'mca_c1_r10_p01_prcp_pcs.nc',
+            'svalues' : 'singular_values.nc',
+            'eofs_A' : 'sst_eofs.nc',
+            'eofs_B' : 'prcp_eofs.nc',
+            'pcs_A' : 'sst_pcs.nc',
+            'pcs_B' : 'prcp_pcs.nc',
         }
 
         svalues = xr.open_dataarray(
-            join(self.path, files['svalues']),
+            join(self.path, 'cplx', files['svalues']),
             engine='h5netcdf'
         )[:self.modes]
         eofs_A = xr.open_dataarray(
-            join(self.path, files['eofs_A']),
+            join(self.path, 'cplx', files['eofs_A']),
             engine='h5netcdf'
         )[..., :self.modes]
         eofs_B = xr.open_dataarray(
-            join(self.path, files['eofs_B']),
+            join(self.path, 'cplx', files['eofs_B']),
             engine='h5netcdf'
         )[..., :self.modes]
         pcs_A = xr.open_dataarray(
-            join(self.path, files['pcs_A']),
+            join(self.path, 'cplx', files['pcs_A']),
             engine='h5netcdf'
         )[:, :self.modes]
         pcs_B = xr.open_dataarray(
-            join(self.path, files['pcs_B']),
+            join(self.path, 'cplx', files['pcs_B']),
             engine='h5netcdf'
         )[:, :self.modes]
 
