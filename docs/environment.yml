@@ -1,0 +1,16 @@
+name: xmca
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python>3.6
+  - numpy
+  - matplotlib
+  - xarray
+  - cartopy=0.18.0
+  - statsmodels
+  - tqdm
+  - yaml
+  - pip:
+    - git+https://github.com/bashtage/sphinx-material.git
+    - xmca
