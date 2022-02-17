@@ -8,16 +8,20 @@ import cmath
 import os
 import warnings
 from datetime import datetime
-from typing import Dict
+from typing import Dict, Union
 
 import matplotlib.pyplot as plt
 import numpy as np
 
+
 try:
     import dask.array as da
     dask_support = True
+    # MCA array type.
+    Array = Union[np.ndarray, da.Array]
 except ImportError:
     dask_support = False
+    Array = np.ndarray
 
 import yaml
 from scipy.signal import hilbert
@@ -27,6 +31,8 @@ from tqdm import tqdm
 
 if dask_support:
     from xmca.tools.array import dask_hilbert
+
+# Array Type
 
 from xmca import __version__
 from xmca.tools.array import (get_nan_cols, has_nan_time_steps, remove_mean,
@@ -92,11 +98,13 @@ class MCA:
             if fields[0].shape[0] != fields[1].shape[0]:
                 raise ValueError('''Time dimensions of given fields are different.
                 Time series should have same time lengths.''')
-        instance_type = (np.ndarray, da.Array) if dask_support else np.ndarray
 
-        if not all(isinstance(f, instance_type) for f in fields):
+        array_types = (np.ndarray, da.Array) if dask_support else np.ndarray
+
+        if not all(isinstance(f, array_types) for f in fields):
             raise TypeError('''One or more fields are not `numpy.ndarray` or `dask.Array`
             Please provide these types only.''')
+
 
         if any(has_nan_time_steps(f) for f in fields):
             raise ValueError('''One or more fields contain NaN time steps.
@@ -279,9 +287,9 @@ class MCA:
         scaled = data_dict.copy()
 
         for k, field in scaled.items():
-            field -= mean[k]
-        if self._analysis['is_normalized']:
-            field /= std[k]
+            scaled[k] -= mean[k]
+            if self._analysis['is_normalized']:
+                scaled[k] /= std[k]
 
         return scaled
 
@@ -300,12 +308,12 @@ class MCA:
 
     def _get_X(self, original_scale=False, real=False):
         X  = {k : f.copy() for k, f in self._fields.items()}
-
         if real:
             X  = {k : x.real for k, x in X.items()}
 
         if original_scale:
             X = self._scale_X_inverse(X)
+
 
         return X
 
@@ -533,20 +541,13 @@ class MCA:
 
         return fields
 
-    def _svd(self, fields: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
-        Us = {}
-        Ss = {}
-        Vts = {}
-        for k, f in fields.items():
-            if dask_support and isinstance(f, da.Array):
-                rank = np.min(f.shape)
-                u, s, vt = da.linalg.svd_compressed(f, rank).compute()
-            else:
-                u, s, vt = np.linalg.svd(f, full_matrices=False)
-            Us[k] = u
-            Ss[k] = s
-            Vts[k] = vt
-        return Us, Ss, Vts
+    def _svd(self, field:  Array) -> tuple[Array, Array, Array]:
+        if dask_support and isinstance(field, da.Array):
+            rank = np.min(field.shape)
+            u, s, vt = da.linalg.svd_compressed(field, rank)
+        else:
+            u, s, vt = np.linalg.svd(field, full_matrices=False)
+        return u, s, vt
 
     def _get_min_mode(self, n=None, rotated=False):
         n_modes = []
@@ -615,8 +616,11 @@ class MCA:
         X = self._get_X()
 
         # perform PCA of input to speed up algorithm
-        k, l, mt = self._svd(X)
-        R = {key: k[key] * l[key] for key in self._keys}
+        R = {}
+        mt = {}
+        for key, field in X.items():
+            k, l, mt[key] = self._svd(field)
+            R[key] = k * l
 
         # create covariance matrix
         try:
@@ -634,10 +638,12 @@ class MCA:
 
         # perform singular value decomposition
         try:
-            VLeft, singular_values, VTRight = np.linalg.svd(
-                kernel, full_matrices=False
-            )
+            VLeft, singular_values, VTRight = self._svd(kernel)
             VRight = VTRight.conj().T
+            if dask_support and isinstance(VRight, da.Array):
+                VLeft = VLeft.compute()
+                singular_values = singular_values.compute()
+                VRight = VRight.compute()
             del(VTRight)
         except np.linalg.LinAlgError:
             raise np.linalg.LinAlgError(

@@ -124,7 +124,7 @@ def get_nan_cols(arr: np.ndarray) -> np.ndarray:
     if isinstance(arr, np.ndarray):
         nan_index = np.isnan(arr).any(axis=0)
     elif isinstance(arr, da.Array):
-        nan_index = da.isnan(arr).any(axis=0)
+        nan_index = da.isnan(arr).any(axis=0).compute()
     else:
         raise TypeError('Must be either `np.ndarray` or `dask.array.Array`')
 
@@ -149,7 +149,6 @@ def remove_nan_cols(arr: np.ndarray) -> np.ndarray:
 
     idx = get_nan_cols(arr)
     new_arr  = arr[:, ~idx]
-
     return new_arr
 
 
@@ -160,16 +159,17 @@ def has_nan_time_steps(array):
     time along axis 0 and variables along axis 1. A NaN time step is a row
     which contain NaN only.
     '''
-
-    return (np.isnan(array).all(axis=tuple(range(1, array.ndim))).any())
-
+    isnan = da.isnan if dask_support and isinstance(array, da.Array) else np.isnan
+    arr = (isnan(array).all(axis=tuple(range(1, array.ndim))).any())
+    return arr
 
 def pearsonr(x, y):
     if x.shape[0] != y.shape[0]:
         raise ValueError('Time dimensions are different.')
     n = x.shape[0]
 
-    r = np.corrcoef(x, y, rowvar=False)
+    corrcoef = da.corrcoef if dask_support and isinstance(x, da.Array) else np.corrcoef
+    r = corrcoef(x, y, rowvar=False)
     r = r[:x.shape[1], x.shape[1]:]
 
     # get p-values
