@@ -430,22 +430,6 @@ class MCA:
 
         return exp_extension + lin_extension
 
-    def _get_reg_coefs(self, x, y):
-        assert(x.shape[0] == y.shape[0])
-        N = x.shape[0]
-
-        xmean = np.mean(x, axis=0)
-        ymean = np.mean(y, axis=0)
-        xstd  = np.mean(x, axis=0)
-
-        # Compute covariance along time axis
-        cov   = np.sum((x - xmean) * (y - ymean), axis=0) / N
-
-        # Compute regression slope and intercept:
-        slope     = cov / (xstd**2)
-        intercept = ymean - xmean * slope
-        return intercept, slope
-
     def _vec_exp_forecast(self, field):
         N = field.shape[0]
         x = np.arange(N)
@@ -543,8 +527,9 @@ class MCA:
 
     def _svd(self, field:  Array) -> tuple[Array, Array, Array]:
         if dask_support and isinstance(field, da.Array):
-            rank = np.min(field.shape)
-            u, s, vt = da.linalg.svd_compressed(field, rank)
+            #rank = np.min(field.shape)
+            #u, s, vt = da.linalg.svd_compressed(field, rank, n_power_iter=0)
+            u, s, vt = da.linalg.svd(field)
         else:
             u, s, vt = np.linalg.svd(field, full_matrices=False)
         return u, s, vt
